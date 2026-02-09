@@ -1,0 +1,13 @@
+{
+    "name": "jira-sync-github-action",
+    "version": "1.0.0",
+    "description": "Sync Google Sheets to Jira via GitHub Actions",
+    "main": "sync_jira.js",
+    "scripts": {
+        "start": "node sync_jira.js"
+    },
+    "dependencies": {
+        "axios": "^1.6.0",
+        "googleapis": "^126.0.0"
+    }
+}
