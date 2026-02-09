@@ -53,6 +53,12 @@ function convertDate(d) {
     return p.length === 3 ? `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}` : null;
 }
 
+function getDefaultDate() {
+    const d = new Date();
+    d.setDate(d.getDate() + 30); // 30 days from now
+    return d.toISOString().split('T')[0];
+}
+
 function norm(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 
 function rowHash(r) {
@@ -100,17 +106,43 @@ async function setStatus(key, status) {
     } catch (e) { console.error(`Transition failed for ${key}: ${e.message}`); }
 }
 
-function getBody(row, type, parentKey) {
+async function getBody(row, type, parentKey, userCache) {
     const body = {
         fields: {
             summary: row['Summary'],
             project: { key: PROJECT_KEY },
-            issuetype: { id: ISSUE_TYPE_IDS[type] }
+            issuetype: { id: ISSUE_TYPE_IDS[type] },
+            duedate: convertDate(row['Due Date']) || getDefaultDate()
         }
     };
+
     if (parentKey) body.fields.parent = { key: parentKey };
-    const d = convertDate(row['Due Date']);
-    if (d) body.fields.duedate = d;
+
+    // Add assignee
+    const email = row['Assignee (Owner Mail ID)'];
+    if (email) {
+        const aid = await getUserId(email, userCache);
+        if (aid) body.fields.assignee = { accountId: aid };
+    }
+
+    // JTBD requires custom fields
+    if (type === 'JTBD') {
+        const func = row['Function  (add only for JTBD)'] || 'Growth';
+        body.fields[CUSTOM_FIELDS['Function']] = { value: func.trim() };
+
+        const mf = row['Metric in Focus (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric In Focus']] = String(mf).trim();
+
+        const mt = row['Metric Target (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Target']] = String(mt).trim();
+
+        const mc = row['Metric Current State (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Current State']] = String(mc).trim();
+
+        const ms = row['Metric Start State (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim();
+    }
+
     return body;
 }
 
@@ -121,23 +153,11 @@ function getUpdateBody(row) {
     return body;
 }
 
-async function applyCustom(body, row, userCache) {
+async function applyCustomUpdate(body, row, userCache) {
     const email = row['Assignee (Owner Mail ID)'];
     if (email) {
         const aid = await getUserId(email, userCache);
         if (aid) body.fields.assignee = { accountId: aid };
-    }
-    if (row['Issue Type'] === 'JTBD') {
-        const func = row['Function  (add only for JTBD)'];
-        if (func && func.trim()) body.fields[CUSTOM_FIELDS['Function']] = { value: func.trim() };
-        const mf = row['Metric in Focus (add only for JTBD)'];
-        if (mf && String(mf).trim()) body.fields[CUSTOM_FIELDS['Metric In Focus']] = String(mf).trim();
-        const mt = row['Metric Target (add only for JTBD)'];
-        if (mt && String(mt).trim()) body.fields[CUSTOM_FIELDS['Metric Target']] = String(mt).trim();
-        const mc = row['Metric Current State (add only for JTBD)'];
-        if (mc && String(mc).trim()) body.fields[CUSTOM_FIELDS['Metric Current State']] = String(mc).trim();
-        const ms = row['Metric Start State (add only for JTBD)'];
-        if (ms && String(ms).trim()) body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim();
     }
 }
 
@@ -166,7 +186,7 @@ async function sync() {
 
     console.log(`🔄 ${changedRows.length} changed rows to process`);
 
-    // Fetch ALL Jira Issues (needed for cascade)
+    // Fetch ALL Jira Issues
     let allJiraIssues = [];
     let jiraBySummary = {};
     try {
@@ -200,25 +220,13 @@ async function sync() {
         const jiraKey = issueMapping[key];
 
         if (!jiraKey) {
-            // Create - First try with minimal fields
+            // Create
             try {
-                const body = getBody(row, type, parentKey);
-                console.log(`📤 Creating ${key} with body:`, JSON.stringify(body));
+                const body = await getBody(row, type, parentKey, userCache);
+                console.log(`📤 Creating ${key}...`);
                 const res = await jira.post('/rest/api/3/issue', body);
                 issueMapping[key] = res.data.key;
                 console.log(`✅ Created: ${key} -> ${res.data.key}`);
-
-                // Now try to add custom fields
-                try {
-                    const updateBody = { fields: {} };
-                    await applyCustom(updateBody, row, userCache);
-                    if (Object.keys(updateBody.fields).length > 0) {
-                        await jira.put(`/rest/api/3/issue/${res.data.key}`, updateBody);
-                    }
-                } catch (e2) {
-                    console.log(`⚠️ Custom fields skipped for ${key}`);
-                }
-
                 if (row['Status']) await setStatus(res.data.key, row['Status']);
                 lastHashes[key] = rowHash(row);
                 results.created++;
@@ -231,7 +239,7 @@ async function sync() {
             // Update
             try {
                 const body = getUpdateBody(row);
-                await applyCustom(body, row, userCache);
+                await applyCustomUpdate(body, row, userCache);
                 await jira.put(`/rest/api/3/issue/${jiraKey}`, body);
                 if (row['Status']) await setStatus(jiraKey, row['Status']);
                 console.log(`🔄 Updated: ${key} -> ${jiraKey}`);
@@ -267,19 +275,27 @@ async function sync() {
     // ===== STATUS CASCADE =====
     console.log('\n🔗 Running Cascade Logic...');
 
+    // Refresh Jira issues for cascade
+    try {
+        const search = await jira.post('/rest/api/3/search/jql', {
+            jql: `project = ${PROJECT_KEY}`,
+            fields: ['summary', 'status', 'parent', 'issuetype'],
+            maxResults: 1000
+        });
+        allJiraIssues = search.data.issues || [];
+    } catch (e) { }
+
     const jiraThreads = allJiraIssues.filter(i => i.fields.issuetype.name === 'Thread');
     const jiraMilestones = allJiraIssues.filter(i => i.fields.issuetype.name === 'Milestone');
     const jiraJtbds = allJiraIssues.filter(i => i.fields.issuetype.name === 'JTBD');
 
-    // 1. Thread <- Milestone
+    // Thread <- Milestone
     for (const thread of jiraThreads) {
         const children = jiraMilestones.filter(m => m.fields.parent && m.fields.parent.key === thread.key);
         if (children.length === 0) continue;
-
         const allDone = children.every(c => c.fields.status.name === 'Done');
         const anyStarted = children.some(c => ['Done', 'On track', 'In Progress'].includes(c.fields.status.name));
         const current = thread.fields.status.name;
-
         if (allDone && current !== 'Done') {
             await setStatus(thread.key, 'Done');
             console.log(`🔗 Cascade: ${thread.key} -> Done`);
@@ -291,15 +307,13 @@ async function sync() {
         }
     }
 
-    // 2. JTBD <- Thread
+    // JTBD <- Thread
     for (const jtbd of jiraJtbds) {
         const children = jiraThreads.filter(t => t.fields.parent && t.fields.parent.key === jtbd.key);
         if (children.length === 0) continue;
-
         const allDone = children.every(c => c.fields.status.name === 'Done');
         const anyStarted = children.some(c => ['Done', 'On track', 'In Progress'].includes(c.fields.status.name));
         const current = jtbd.fields.status.name;
-
         if (allDone && current !== 'Done') {
             await setStatus(jtbd.key, 'Done');
             console.log(`🔗 Cascade: ${jtbd.key} -> Done`);
