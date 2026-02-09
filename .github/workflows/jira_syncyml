@@ -1,0 +1,50 @@
+name: Jira Sync Automation
+
+on:
+  schedule:
+    # 1. Urgency (9 AM - 11 AM IST): Every 5 Minutes
+    # IST = UTC + 5:30
+    # 9:00 AM IST = 03:30 UTC, 11:00 AM IST = 05:30 UTC
+    - cron: '30-59/5 3 * * *'   # 3:30-3:55 UTC
+    - cron: '*/5 4 * * *'       # 4:00-4:55 UTC
+    - cron: '0-30/5 5 * * *'    # 5:00-5:30 UTC
+
+    # 2. Day (11 AM - 12 AM IST): Every 3 Hours
+    # 11 AM, 2 PM, 5 PM, 8 PM, 11 PM IST
+    # = 5:30, 8:30, 11:30, 14:30, 17:30 UTC
+    - cron: '30 5,8,11,14,17 * * *'
+
+    # 3. Night (12 AM - 9 AM IST): Once at 6 AM IST = 0:30 UTC
+    - cron: '30 0 * * *'
+
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Jira Sync
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: node sync_jira.js
+
+      - name: Commit State File
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          git add sync_state.json || true
+          git diff --staged --quiet || git commit -m "Update sync state [skip ci]"
+          git push || true
