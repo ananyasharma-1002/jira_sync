@@ -101,12 +101,21 @@ async function setStatus(key, status) {
 }
 
 function getBody(row, type, parentKey) {
-    const body = { fields: { summary: row['Summary'] } };
-    if (type) {
-        body.fields.project = { key: PROJECT_KEY };
-        body.fields.issuetype = { id: ISSUE_TYPE_IDS[type] };
-    }
+    const body = {
+        fields: {
+            summary: row['Summary'],
+            project: { key: PROJECT_KEY },
+            issuetype: { id: ISSUE_TYPE_IDS[type] }
+        }
+    };
     if (parentKey) body.fields.parent = { key: parentKey };
+    const d = convertDate(row['Due Date']);
+    if (d) body.fields.duedate = d;
+    return body;
+}
+
+function getUpdateBody(row) {
+    const body = { fields: { summary: row['Summary'] } };
     const d = convertDate(row['Due Date']);
     if (d) body.fields.duedate = d;
     return body;
@@ -170,6 +179,7 @@ async function sync() {
         for (const i of allJiraIssues) {
             jiraBySummary[norm(i.fields.summary)] = i.key;
         }
+        console.log(`📂 Found ${allJiraIssues.length} existing Jira issues`);
     } catch (e) { console.error('Jira search failed:', e.message); }
 
     // Map Missing Keys
@@ -177,7 +187,10 @@ async function sync() {
         const key = row['Issue Key'];
         if (!issueMapping[key]) {
             const match = jiraBySummary[norm(row['Summary'])];
-            if (match) issueMapping[key] = match;
+            if (match) {
+                issueMapping[key] = match;
+                console.log(`🔗 Mapped existing: ${key} -> ${match}`);
+            }
         }
     }
 
@@ -187,35 +200,37 @@ async function sync() {
         const jiraKey = issueMapping[key];
 
         if (!jiraKey) {
-            // Create
+            // Create - First try with minimal fields
             try {
                 const body = getBody(row, type, parentKey);
-                await applyCustom(body, row, userCache);
+                console.log(`📤 Creating ${key} with body:`, JSON.stringify(body));
                 const res = await jira.post('/rest/api/3/issue', body);
                 issueMapping[key] = res.data.key;
                 console.log(`✅ Created: ${key} -> ${res.data.key}`);
+
+                // Now try to add custom fields
+                try {
+                    const updateBody = { fields: {} };
+                    await applyCustom(updateBody, row, userCache);
+                    if (Object.keys(updateBody.fields).length > 0) {
+                        await jira.put(`/rest/api/3/issue/${res.data.key}`, updateBody);
+                    }
+                } catch (e2) {
+                    console.log(`⚠️ Custom fields skipped for ${key}`);
+                }
+
                 if (row['Status']) await setStatus(res.data.key, row['Status']);
                 lastHashes[key] = rowHash(row);
                 results.created++;
             } catch (e) {
-                // Fallback (minimal fields)
-                try {
-                    const body = getBody(row, type, parentKey);
-                    const res = await jira.post('/rest/api/3/issue', body);
-                    issueMapping[key] = res.data.key;
-                    console.log(`✅ Created (fallback): ${key} -> ${res.data.key}`);
-                    if (row['Status']) await setStatus(res.data.key, row['Status']);
-                    lastHashes[key] = rowHash(row);
-                    results.created++;
-                } catch (e2) {
-                    console.error(`❌ Failed: ${key} - ${e.message}`);
-                    results.failed++;
-                }
+                const errMsg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+                console.error(`❌ Failed: ${key} - ${errMsg}`);
+                results.failed++;
             }
         } else {
             // Update
             try {
-                const body = getBody(row, null, null);
+                const body = getUpdateBody(row);
                 await applyCustom(body, row, userCache);
                 await jira.put(`/rest/api/3/issue/${jiraKey}`, body);
                 if (row['Status']) await setStatus(jiraKey, row['Status']);
@@ -223,7 +238,8 @@ async function sync() {
                 lastHashes[key] = rowHash(row);
                 results.updated++;
             } catch (e) {
-                console.error(`❌ Update failed: ${key} - ${e.message}`);
+                const errMsg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+                console.error(`❌ Update failed: ${key} - ${errMsg}`);
                 results.failed++;
             }
         }
@@ -235,8 +251,13 @@ async function sync() {
         const threads = changedRows.filter(r => r['Issue Type'] === 'Thread');
         const milestones = changedRows.filter(r => r['Issue Type'] === 'Milestone');
 
+        console.log(`\n📋 Processing ${jtbds.length} JTBDs...`);
         for (const r of jtbds) await processRow(r, 'JTBD', null);
+
+        console.log(`\n📋 Processing ${threads.length} Threads...`);
         for (const r of threads) await processRow(r, 'Thread', issueMapping[r['Parent']]);
+
+        console.log(`\n📋 Processing ${milestones.length} Milestones...`);
         for (const r of milestones) {
             if (issueMapping[r['Parent']]) await processRow(r, 'Milestone', issueMapping[r['Parent']]);
             else { console.error(`❌ No parent for: ${r['Issue Key']}`); results.failed++; }
@@ -261,11 +282,11 @@ async function sync() {
 
         if (allDone && current !== 'Done') {
             await setStatus(thread.key, 'Done');
-            console.log(`🔗 Cascade: ${thread.key} -> Done (all milestones done)`);
+            console.log(`🔗 Cascade: ${thread.key} -> Done`);
             results.cascade++;
         } else if (anyStarted && ['To Do', 'Not picked yet'].includes(current)) {
             await setStatus(thread.key, 'On track');
-            console.log(`🔗 Cascade: ${thread.key} -> On track (some milestones started)`);
+            console.log(`🔗 Cascade: ${thread.key} -> On track`);
             results.cascade++;
         }
     }
@@ -281,11 +302,11 @@ async function sync() {
 
         if (allDone && current !== 'Done') {
             await setStatus(jtbd.key, 'Done');
-            console.log(`🔗 Cascade: ${jtbd.key} -> Done (all threads done)`);
+            console.log(`🔗 Cascade: ${jtbd.key} -> Done`);
             results.cascade++;
         } else if (anyStarted && ['To Do', 'Not picked yet'].includes(current)) {
             await setStatus(jtbd.key, 'On track');
-            console.log(`🔗 Cascade: ${jtbd.key} -> On track (some threads started)`);
+            console.log(`🔗 Cascade: ${jtbd.key} -> On track`);
             results.cascade++;
         }
     }
