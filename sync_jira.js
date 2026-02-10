@@ -125,26 +125,26 @@ async function getBody(row, type, parentKey, userCache) {
         if (aid) body.fields.assignee = { accountId: aid };
     }
 
-    // JTBD custom fields - pass blank if empty
+    // JTBD custom fields - Jira requires these, use fallbacks if blank
     if (type === 'JTBD') {
         const func = row['Function  (add only for JTBD)'];
         if (func && func.trim()) {
             body.fields[CUSTOM_FIELDS['Function']] = { value: func.trim() };
         } else {
-            body.fields[CUSTOM_FIELDS['Function']] = { id: '-1' };
+            body.fields[CUSTOM_FIELDS['Function']] = { value: 'LS Core Business' };
         }
 
-        const mf = row['Metric in Focus (add only for JTBD)'] || '';
-        body.fields[CUSTOM_FIELDS['Metric In Focus']] = String(mf).trim();
+        const mf = row['Metric in Focus (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric In Focus']] = String(mf).trim() || 'N/A';
 
-        const mt = row['Metric Target (add only for JTBD)'] || '';
-        body.fields[CUSTOM_FIELDS['Metric Target']] = String(mt).trim();
+        const mt = row['Metric Target (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Target']] = String(mt).trim() || 'N/A';
 
-        const mc = row['Metric Current State (add only for JTBD)'] || '';
-        body.fields[CUSTOM_FIELDS['Metric Current State']] = String(mc).trim();
+        const mc = row['Metric Current State (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Current State']] = String(mc).trim() || 'N/A';
 
-        const ms = row['Metric Start State (add only for JTBD)'] || '';
-        body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim();
+        const ms = row['Metric Start State (add only for JTBD)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim() || 'N/A';
     }
 
     return body;
