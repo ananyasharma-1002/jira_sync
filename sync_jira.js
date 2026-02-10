@@ -94,15 +94,40 @@ async function getUserId(email, userCache) {
     return null;
 }
 
+const VALID_STATUSES = [
+    'On track', 'Not on track', 'Delayed', 'Done', 'Done, BAU',
+    'Dependent', 'Deprioritised', 'Review Stage', 'Not picked yet'
+];
+
 async function setStatus(key, status) {
     if (!status) return;
-    const s = status.trim().toLowerCase();
-    if (['to do', 'not picked yet'].includes(s)) return;
+
+    // 1. Validate Status
+    const validMatch = VALID_STATUSES.find(vs => vs.toLowerCase() === status.trim().toLowerCase());
+    if (!validMatch) {
+        console.warn(`⚠️ Warning: '${status}' is not a valid status for ${key}. Allowed: ${VALID_STATUSES.join(', ')}`);
+        return;
+    }
+
+    const s = validMatch.toLowerCase();
+
+    // 2. Transition
     try {
         const t = await jira.get(`/rest/api/3/issue/${key}/transitions`);
         const tr = (t.data.transitions || []).find(x =>
-            x.to.name.toLowerCase() === s || x.to.name.toLowerCase().includes(s));
-        if (tr) await jira.post(`/rest/api/3/issue/${key}/transitions`, { transition: { id: tr.id } });
+            x.to.name.toLowerCase() === s); // Exact match preference
+
+        if (tr) {
+            await jira.post(`/rest/api/3/issue/${key}/transitions`, { transition: { id: tr.id } });
+            console.log(`✨ Status updated: ${key} -> ${validMatch}`);
+        } else {
+            // Check if already in that status
+            const issue = await jira.get(`/rest/api/3/issue/${key}?fields=status`);
+            const current = issue.data.fields.status.name;
+            if (current.toLowerCase() !== s) {
+                console.log(`ℹ️ Transition '${validMatch}' not available for ${key} (Current: ${current})`);
+            }
+        }
     } catch (e) { console.error(`Transition failed for ${key}: ${e.message}`); }
 }
 
