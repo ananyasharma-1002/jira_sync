@@ -319,58 +319,7 @@ async function sync() {
         }
     }
 
-    // ===== STATUS CASCADE =====
-    console.log('\n🔗 Running Cascade Logic...');
 
-    // Refresh Jira issues for cascade
-    try {
-        const search = await jira.post('/rest/api/3/search/jql', {
-            jql: `project = ${PROJECT_KEY}`,
-            fields: ['summary', 'status', 'parent', 'issuetype'],
-            maxResults: 1000
-        });
-        allJiraIssues = search.data.issues || [];
-    } catch (e) { }
-
-    const jiraThreads = allJiraIssues.filter(i => i.fields.issuetype.name === 'Thread');
-    const jiraMilestones = allJiraIssues.filter(i => i.fields.issuetype.name === 'Milestone');
-    const jiraJtbds = allJiraIssues.filter(i => i.fields.issuetype.name === 'JTBD');
-
-    // Thread <- Milestone
-    for (const thread of jiraThreads) {
-        const children = jiraMilestones.filter(m => m.fields.parent && m.fields.parent.key === thread.key);
-        if (children.length === 0) continue;
-        const allDone = children.every(c => c.fields.status.name === 'Done');
-        const anyStarted = children.some(c => ['Done', 'On track', 'In Progress'].includes(c.fields.status.name));
-        const current = thread.fields.status.name;
-        if (allDone && current !== 'Done') {
-            await setStatus(thread.key, 'Done');
-            console.log(`🔗 Cascade: ${thread.key} -> Done`);
-            results.cascade++;
-        } else if (anyStarted && ['To Do', 'Not picked yet'].includes(current)) {
-            await setStatus(thread.key, 'On track');
-            console.log(`🔗 Cascade: ${thread.key} -> On track`);
-            results.cascade++;
-        }
-    }
-
-    // JTBD <- Thread
-    for (const jtbd of jiraJtbds) {
-        const children = jiraThreads.filter(t => t.fields.parent && t.fields.parent.key === jtbd.key);
-        if (children.length === 0) continue;
-        const allDone = children.every(c => c.fields.status.name === 'Done');
-        const anyStarted = children.some(c => ['Done', 'On track', 'In Progress'].includes(c.fields.status.name));
-        const current = jtbd.fields.status.name;
-        if (allDone && current !== 'Done') {
-            await setStatus(jtbd.key, 'Done');
-            console.log(`🔗 Cascade: ${jtbd.key} -> Done`);
-            results.cascade++;
-        } else if (anyStarted && ['To Do', 'Not picked yet'].includes(current)) {
-            await setStatus(jtbd.key, 'On track');
-            console.log(`🔗 Cascade: ${jtbd.key} -> On track`);
-            results.cascade++;
-        }
-    }
 
     // Save State
     saveState({ issueMapping, userCache, lastHashes });
@@ -380,7 +329,6 @@ async function sync() {
     console.log(`   Updated: ${results.updated}`);
     console.log(`   Skipped: ${results.skipped}`);
     console.log(`   Cleaned: ${results.cleaned}`);
-    console.log(`   Cascade: ${results.cascade}`);
     console.log(`   Failed: ${results.failed}`);
 
     return results;
