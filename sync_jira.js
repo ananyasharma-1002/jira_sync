@@ -125,21 +125,25 @@ async function getBody(row, type, parentKey, userCache) {
         if (aid) body.fields.assignee = { accountId: aid };
     }
 
-    // JTBD requires custom fields
+    // JTBD custom fields - pass blank if empty
     if (type === 'JTBD') {
-        const func = row['Function  (add only for JTBD)'] || 'Growth';
-        body.fields[CUSTOM_FIELDS['Function']] = { value: func.trim() };
+        const func = row['Function  (add only for JTBD)'];
+        if (func && func.trim()) {
+            body.fields[CUSTOM_FIELDS['Function']] = { value: func.trim() };
+        } else {
+            body.fields[CUSTOM_FIELDS['Function']] = { id: '-1' };
+        }
 
-        const mf = row['Metric in Focus (add only for JTBD)'] || 'N/A';
+        const mf = row['Metric in Focus (add only for JTBD)'] || '';
         body.fields[CUSTOM_FIELDS['Metric In Focus']] = String(mf).trim();
 
-        const mt = row['Metric Target (add only for JTBD)'] || 'N/A';
+        const mt = row['Metric Target (add only for JTBD)'] || '';
         body.fields[CUSTOM_FIELDS['Metric Target']] = String(mt).trim();
 
-        const mc = row['Metric Current State (add only for JTBD)'] || 'N/A';
+        const mc = row['Metric Current State (add only for JTBD)'] || '';
         body.fields[CUSTOM_FIELDS['Metric Current State']] = String(mc).trim();
 
-        const ms = row['Metric Start State (add only for JTBD)'] || 'N/A';
+        const ms = row['Metric Start State (add only for JTBD)'] || '';
         body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim();
     }
 
