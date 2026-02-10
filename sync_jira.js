@@ -100,13 +100,13 @@ const VALID_STATUSES = [
 ];
 
 async function setStatus(key, status) {
-    if (!status) return;
+    if (!status) return true;
 
     // 1. Validate Status
     const validMatch = VALID_STATUSES.find(vs => vs.toLowerCase() === status.trim().toLowerCase());
     if (!validMatch) {
         console.warn(`⚠️ Warning: '${status}' is not a valid status for ${key}. Allowed: ${VALID_STATUSES.join(', ')}`);
-        return;
+        return false;
     }
 
     const s = validMatch.toLowerCase();
@@ -114,21 +114,27 @@ async function setStatus(key, status) {
     // 2. Transition
     try {
         const t = await jira.get(`/rest/api/3/issue/${key}/transitions`);
-        const tr = (t.data.transitions || []).find(x =>
-            x.to.name.toLowerCase() === s); // Exact match preference
+        const transitions = t.data.transitions || [];
+        const tr = transitions.find(x => x.to.name.toLowerCase() === s); // Exact match preference
 
         if (tr) {
             await jira.post(`/rest/api/3/issue/${key}/transitions`, { transition: { id: tr.id } });
             console.log(`✨ Status updated: ${key} -> ${validMatch}`);
+            return true;
         } else {
             // Check if already in that status
             const issue = await jira.get(`/rest/api/3/issue/${key}?fields=status`);
             const current = issue.data.fields.status.name;
-            if (current.toLowerCase() !== s) {
-                console.log(`ℹ️ Transition '${validMatch}' not available for ${key} (Current: ${current})`);
-            }
+            if (current.toLowerCase() === s) return true;
+
+            console.log(`ℹ️ Cannot transition ${key} from '${current}' to '${validMatch}'.`);
+            console.log(`   Available transitions: ${transitions.map(x => x.to.name).join(', ') || 'None'}`);
+            return false;
         }
-    } catch (e) { console.error(`Transition failed for ${key}: ${e.message}`); }
+    } catch (e) {
+        console.error(`❌ Transition failed for ${key}: ${e.message}`);
+        return false;
+    }
 }
 
 async function getBody(row, type, parentKey, userCache) {
@@ -265,6 +271,7 @@ async function sync() {
     async function processRow(row, type, parentKey) {
         const key = row['Issue Key'];
         const jiraKey = issueMapping[key];
+        let success = true;
 
         if (!jiraKey) {
             // Create
@@ -274,9 +281,18 @@ async function sync() {
                 const res = await jira.post('/rest/api/3/issue', body);
                 issueMapping[key] = res.data.key;
                 console.log(`✅ Created: ${key} -> ${res.data.key}`);
-                if (row['Status']) await setStatus(res.data.key, row['Status']);
-                lastHashes[key] = rowHash(row);
-                results.created++;
+
+                // Default to 'Not picked yet' if empty
+                const statusToSet = row['Status'] ? row['Status'].trim() : 'Not picked yet';
+                const statusOk = await setStatus(res.data.key, statusToSet);
+                if (!statusOk) success = false;
+
+                if (success) {
+                    lastHashes[key] = rowHash(row);
+                    results.created++;
+                } else {
+                    results.failed++; // Count as failed so user knows something is wrong
+                }
             } catch (e) {
                 const errMsg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
                 console.error(`❌ Failed: ${key} - ${errMsg}`);
@@ -288,10 +304,19 @@ async function sync() {
                 const body = getUpdateBody(row);
                 await applyCustomUpdate(body, row, userCache);
                 await jira.put(`/rest/api/3/issue/${jiraKey}`, body);
-                if (row['Status']) await setStatus(jiraKey, row['Status']);
-                console.log(`🔄 Updated: ${key} -> ${jiraKey}`);
-                lastHashes[key] = rowHash(row);
-                results.updated++;
+
+                // Default to 'Not picked yet' if empty
+                const statusToSet = row['Status'] ? row['Status'].trim() : 'Not picked yet';
+                const statusOk = await setStatus(jiraKey, statusToSet);
+                if (!statusOk) success = false;
+
+                if (success) {
+                    console.log(`🔄 Updated: ${key} -> ${jiraKey}`);
+                    lastHashes[key] = rowHash(row);
+                    results.updated++;
+                } else {
+                    results.failed++;
+                }
             } catch (e) {
                 const errMsg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
                 console.error(`❌ Update failed: ${key} - ${errMsg}`);
