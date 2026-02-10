@@ -167,14 +167,48 @@ async function sync() {
 
     const state = loadState();
     const { issueMapping, userCache, lastHashes } = state;
-    const results = { created: 0, updated: 0, skipped: 0, failed: 0, cascade: 0 };
+    const results = { created: 0, updated: 0, skipped: 0, failed: 0, cascade: 0, cleaned: 0 };
 
     // Fetch Sheet Data
     console.log('📊 Fetching Google Sheet...');
     const allRows = await getSheetData();
     console.log(`📋 Found ${allRows.length} rows`);
 
-    // Find Changed Rows
+    // Fetch ALL Jira Issues
+    let allJiraIssues = [];
+    let jiraBySummary = {};
+    let jiraKeySet = new Set();
+    try {
+        const search = await jira.post('/rest/api/3/search/jql', {
+            jql: `project = ${PROJECT_KEY}`,
+            fields: ['summary', 'status', 'parent', 'issuetype'],
+            maxResults: 1000
+        });
+        allJiraIssues = search.data.issues || [];
+        for (const i of allJiraIssues) {
+            jiraBySummary[norm(i.fields.summary)] = i.key;
+            jiraKeySet.add(i.key);
+        }
+        console.log(`📂 Found ${allJiraIssues.length} existing Jira issues`);
+    } catch (e) { console.error('Jira search failed:', e.message); }
+
+    // ===== CLEANUP: Detect Deleted Issues =====
+    console.log('\n🧹 Checking for deleted Jira issues...');
+    for (const [csvKey, jiraKey] of Object.entries(issueMapping)) {
+        if (!jiraKeySet.has(jiraKey)) {
+            console.log(`🗑️ Deleted from Jira: ${csvKey} -> ${jiraKey} (removing mapping)`);
+            delete issueMapping[csvKey];
+            delete lastHashes[csvKey];
+            results.cleaned++;
+        }
+    }
+    if (results.cleaned > 0) {
+        console.log(`🧹 Cleaned ${results.cleaned} stale mappings`);
+    } else {
+        console.log('✅ No deleted issues found');
+    }
+
+    // Find Changed Rows (AFTER cleanup so cleaned rows get re-processed)
     const changedRows = [];
     for (const row of allRows) {
         const key = row['Issue Key'];
@@ -185,22 +219,6 @@ async function sync() {
     }
 
     console.log(`🔄 ${changedRows.length} changed rows to process`);
-
-    // Fetch ALL Jira Issues
-    let allJiraIssues = [];
-    let jiraBySummary = {};
-    try {
-        const search = await jira.post('/rest/api/3/search/jql', {
-            jql: `project = ${PROJECT_KEY}`,
-            fields: ['summary', 'status', 'parent', 'issuetype'],
-            maxResults: 1000
-        });
-        allJiraIssues = search.data.issues || [];
-        for (const i of allJiraIssues) {
-            jiraBySummary[norm(i.fields.summary)] = i.key;
-        }
-        console.log(`📂 Found ${allJiraIssues.length} existing Jira issues`);
-    } catch (e) { console.error('Jira search failed:', e.message); }
 
     // Map Missing Keys
     for (const row of changedRows) {
@@ -332,6 +350,7 @@ async function sync() {
     console.log(`   Created: ${results.created}`);
     console.log(`   Updated: ${results.updated}`);
     console.log(`   Skipped: ${results.skipped}`);
+    console.log(`   Cleaned: ${results.cleaned}`);
     console.log(`   Cascade: ${results.cascade}`);
     console.log(`   Failed: ${results.failed}`);
 
