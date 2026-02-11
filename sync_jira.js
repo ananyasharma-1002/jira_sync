@@ -283,11 +283,33 @@ async function sync() {
     // Process Rows
     async function processRow(row, type, parentKey) {
         const key = row['Issue Key'];
-        const jiraKey = issueMapping[key];
+        let jiraKey = issueMapping[key];
         let success = true;
 
+        // If no mapping exists, do a JQL safety search to prevent duplicates
         if (!jiraKey) {
-            // Create
+            try {
+                const summary = row['Summary'].replace(/"/g, '\\"');
+                const searchRes = await jira.post('/rest/api/3/search/jql', {
+                    jql: `project = ${PROJECT_KEY} AND summary ~ "\\"${summary}\\""`,
+                    fields: ['summary'],
+                    maxResults: 5
+                });
+                const found = (searchRes.data.issues || []).find(
+                    i => norm(i.fields.summary) === norm(row['Summary'])
+                );
+                if (found) {
+                    issueMapping[key] = found.key;
+                    jiraKey = found.key;
+                    console.log(`🔗 Found existing issue by search: ${key} -> ${found.key} (preventing duplicate)`);
+                }
+            } catch (e) {
+                console.warn(`⚠️ Duplicate check search failed for ${key}: ${e.message}`);
+            }
+        }
+
+        if (!jiraKey) {
+            // Create - ONLY if absolutely no existing issue found
             try {
                 const body = await getBody(row, type, parentKey, userCache);
                 console.log(`📤 Creating ${key}...`);
