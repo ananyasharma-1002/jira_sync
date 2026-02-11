@@ -1,19 +1,7 @@
 name: Jira Sync Automation
 
 on:
-  schedule:
-    # 1. URGENCY: 9 AM - 12 PM IST = Every 5 Minutes
-    # 9 AM IST = 3:30 UTC, 12 PM IST = 6:30 UTC
-    - cron: '*/5 3-6 * * *'
-
-    # 2. DAY: 12 PM - 12 AM IST = Every 3 Hours
-    # 12 PM, 3 PM, 6 PM, 9 PM IST = 6:30, 9:30, 12:30, 15:30 UTC
-    - cron: '30 6,9,12,15 * * *'
-
-    # 3. NIGHT: 6 AM IST fixed = 0:30 UTC
-    - cron: '30 0 * * *'
-
-  workflow_dispatch:
+   workflow_dispatch:
 
 jobs:
   sync:
