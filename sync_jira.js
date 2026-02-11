@@ -4,8 +4,8 @@ const axios = require('axios');
 const { google } = require('googleapis');
 
 // ===== CONFIG =====
-const SHEET_ID = '1BEFNLeuVQ8HdpsKD5_KB4gtXHgpMInm9pFKM8yvKVXk';
-const SHEET_NAME = 'JIRA format';
+const SHEET_ID = process.env.SHEET_ID;
+const SHEET_NAME = process.env.SHEET_NAME || 'JIRA format';
 const JIRA_EMAIL = process.env.JIRA_EMAIL || 'ananya.sharma@leapfinance.com';
 const JIRA_TOKEN = process.env.JIRA_TOKEN;
 const PROJECT_KEY = 'BUS';
