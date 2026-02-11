@@ -48,9 +48,17 @@ async function getSheetData() {
 
 // ===== HELPERS =====
 function convertDate(d) {
-    if (!d || !String(d).includes('/')) return null;
-    const p = String(d).split('/');
-    return p.length === 3 ? `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}` : null;
+    if (!d) return null;
+    const str = String(d).trim();
+    // Support DD/MM/YYYY format
+    const match = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!match) {
+        console.warn(`⚠️ Invalid date format: '${str}' (expected DD/MM/YYYY)`);
+        return null;
+    }
+    const [, day, month, year] = match;
+    const formatted = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    return formatted;
 }
 
 function getDefaultDate() {
@@ -111,23 +119,28 @@ async function setStatus(key, status) {
 
     const s = validMatch.toLowerCase();
 
-    // 2. Transition
+    // 2. Get current status first
     try {
+        const issue = await jira.get(`/rest/api/3/issue/${key}?fields=status`);
+        const currentStatus = issue.data.fields.status.name;
+
+        // Already in desired status
+        if (currentStatus.toLowerCase() === s) {
+            console.log(`✅ ${key}: Already in '${currentStatus}' — no change needed`);
+            return true;
+        }
+
+        // 3. Find and execute transition
         const t = await jira.get(`/rest/api/3/issue/${key}/transitions`);
         const transitions = t.data.transitions || [];
-        const tr = transitions.find(x => x.to.name.toLowerCase() === s); // Exact match preference
+        const tr = transitions.find(x => x.to.name.toLowerCase() === s);
 
         if (tr) {
-            await jira.post(`/rest/api/3/issue/${key}/transitions`, { transition: { id: tr.id } });
-            console.log(`✨ Status updated: ${key} -> ${validMatch}`);
+            await jira.post(`/rest/api/3/issue/${key}/transitions?notifyUsers=false`, { transition: { id: tr.id } });
+            console.log(`✨ ${key}: Status changed: '${currentStatus}' → '${validMatch}'`);
             return true;
         } else {
-            // Check if already in that status
-            const issue = await jira.get(`/rest/api/3/issue/${key}?fields=status`);
-            const current = issue.data.fields.status.name;
-            if (current.toLowerCase() === s) return true;
-
-            console.log(`ℹ️ Cannot transition ${key} from '${current}' to '${validMatch}'.`);
+            console.log(`ℹ️ Cannot transition ${key} from '${currentStatus}' to '${validMatch}'.`);
             console.log(`   Available transitions: ${transitions.map(x => x.to.name).join(', ') || 'None'}`);
             return false;
         }
@@ -278,7 +291,7 @@ async function sync() {
             try {
                 const body = await getBody(row, type, parentKey, userCache);
                 console.log(`📤 Creating ${key}...`);
-                const res = await jira.post('/rest/api/3/issue', body);
+                const res = await jira.post('/rest/api/3/issue?notifyUsers=false', body);
                 issueMapping[key] = res.data.key;
                 console.log(`✅ Created: ${key} -> ${res.data.key}`);
 
@@ -303,7 +316,7 @@ async function sync() {
             try {
                 const body = getUpdateBody(row);
                 await applyCustomUpdate(body, row, userCache);
-                await jira.put(`/rest/api/3/issue/${jiraKey}`, body);
+                await jira.put(`/rest/api/3/issue/${jiraKey}?notifyUsers=false`, body);
 
                 // Default to 'Not picked yet' if empty
                 const statusToSet = row['Status'] ? row['Status'].trim() : 'Not picked yet';
