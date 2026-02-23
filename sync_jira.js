@@ -5,7 +5,7 @@ const { google } = require('googleapis');
 
 // ===== CONFIG =====
 const SHEET_ID = process.env.SHEET_ID;
-const SHEET_NAME = process.env.SHEET_NAME || 'interns';
+const SHEET_NAME = process.env.SHEET_NAME || 'Final import sheet';
 const JIRA_EMAIL = process.env.JIRA_EMAIL || 'ananya.sharma@leapfinance.com';
 const JIRA_TOKEN = process.env.JIRA_TOKEN;
 const PROJECT_KEY = 'BUS';
