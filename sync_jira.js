@@ -5,20 +5,21 @@ const { google } = require('googleapis');
 
 // ===== CONFIG =====
 const SHEET_ID = process.env.SHEET_ID;
-const SHEET_NAME = process.env.SHEET_NAME || 'JIRA format';
+const SHEET_NAME = process.env.SHEET_NAME || 'interns';
 const JIRA_EMAIL = process.env.JIRA_EMAIL || 'ananya.sharma@leapfinance.com';
 const JIRA_TOKEN = process.env.JIRA_TOKEN;
 const PROJECT_KEY = 'BUS';
 const JIRA_BASE = 'https://leapfinance.atlassian.net';
 const STATE_FILE = path.join(__dirname, 'sync_state.json');
 
-const ISSUE_TYPE_IDS = { 'JTBD': '10223', 'Thread': '10224', 'Milestone': '10225' };
+const ISSUE_TYPE_IDS = { 'JTBD': '10223', 'Thread': '10224' };
 const CUSTOM_FIELDS = {
     'Function': 'customfield_10475',
     'Metric In Focus': 'customfield_10478',
     'Metric Target': 'customfield_10477',
     'Metric Current State': 'customfield_10511',
-    'Metric Start State': 'customfield_10476'
+    'Metric Start State': 'customfield_10476',
+    'Next Milestone': 'customfield_10610'
 };
 
 const auth = Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString('base64');
@@ -70,7 +71,7 @@ function getDefaultDate() {
 function norm(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 
 function rowHash(r) {
-    return ['Summary', 'Parent', 'Assignee (Owner Mail ID)', 'Due Date', 'Status',
+    return ['Summary of JTBD/Thread', 'Parent', 'Next Milestone (add only for Thread)', 'Assignee (Owner Mail ID)', 'Due Date', 'Status',
         'Function  (add only for JTBD)', 'Metric in Focus (add only for JTBD)',
         'Metric Target (add only for JTBD)', 'Metric Current State (add only for JTBD)',
         'Metric Start State (add only for JTBD)'].map(x => String(r[x] || '')).join('|');
@@ -153,7 +154,7 @@ async function setStatus(key, status) {
 async function getBody(row, type, parentKey, userCache) {
     const body = {
         fields: {
-            summary: row['Summary'],
+            summary: row['Summary of JTBD/Thread'],
             project: { key: PROJECT_KEY },
             issuetype: { id: ISSUE_TYPE_IDS[type] },
             duedate: convertDate(row['Due Date']) || getDefaultDate()
@@ -191,13 +192,31 @@ async function getBody(row, type, parentKey, userCache) {
         body.fields[CUSTOM_FIELDS['Metric Start State']] = String(ms).trim() || 'N/A';
     }
 
+    // Next Milestone for Thread
+    if (type === 'Thread') {
+        const desc = row['Next Milestone (add only for Thread)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Next Milestone']] = String(desc).trim() || 'N/A';
+    }
+
     return body;
 }
 
-function getUpdateBody(row) {
-    const body = { fields: { summary: row['Summary'] } };
+function getUpdateBody(row, parentKey) {
+    const body = { fields: { summary: row['Summary of JTBD/Thread'] } };
     const d = convertDate(row['Due Date']);
     if (d) body.fields.duedate = d;
+
+    // Update parent if provided
+    if (parentKey) {
+        body.fields.parent = { key: parentKey };
+    }
+
+    // Also update custom field on Thread if needed
+    if (row['Issue Type'] === 'Thread') {
+        const desc = row['Next Milestone (add only for Thread)'] || 'N/A';
+        body.fields[CUSTOM_FIELDS['Next Milestone']] = String(desc).trim() || 'N/A';
+    }
+
     return body;
 }
 
@@ -272,7 +291,7 @@ async function sync() {
     for (const row of changedRows) {
         const key = row['Issue Key'];
         if (!issueMapping[key]) {
-            const match = jiraBySummary[norm(row['Summary'])];
+            const match = jiraBySummary[norm(row['Summary of JTBD/Thread'])];
             if (match) {
                 issueMapping[key] = match;
                 console.log(`🔗 Mapped existing: ${key} -> ${match}`);
@@ -289,14 +308,14 @@ async function sync() {
         // If no mapping exists, do a JQL safety search to prevent duplicates
         if (!jiraKey) {
             try {
-                const summary = row['Summary'].replace(/"/g, '\\"');
+                const summary = row['Summary of JTBD/Thread'] ? row['Summary of JTBD/Thread'].replace(/"/g, '\\"') : '';
                 const searchRes = await jira.post('/rest/api/3/search/jql', {
                     jql: `project = ${PROJECT_KEY} AND summary ~ "\\"${summary}\\""`,
                     fields: ['summary'],
                     maxResults: 5
                 });
                 const found = (searchRes.data.issues || []).find(
-                    i => norm(i.fields.summary) === norm(row['Summary'])
+                    i => norm(i.fields.summary) === norm(row['Summary of JTBD/Thread'])
                 );
                 if (found) {
                     issueMapping[key] = found.key;
@@ -336,7 +355,7 @@ async function sync() {
         } else {
             // Update
             try {
-                const body = getUpdateBody(row);
+                const body = getUpdateBody(row, parentKey);
                 await applyCustomUpdate(body, row, userCache);
                 await jira.put(`/rest/api/3/issue/${jiraKey}?notifyUsers=false`, body);
 
@@ -360,22 +379,23 @@ async function sync() {
         }
     }
 
-    // Process in Order: JTBD -> Thread -> Milestone
+    // Process in Order: JTBD -> Thread
     if (changedRows.length > 0) {
         const jtbds = changedRows.filter(r => r['Issue Type'] === 'JTBD');
         const threads = changedRows.filter(r => r['Issue Type'] === 'Thread');
-        const milestones = changedRows.filter(r => r['Issue Type'] === 'Milestone');
 
         console.log(`\n📋 Processing ${jtbds.length} JTBDs...`);
         for (const r of jtbds) await processRow(r, 'JTBD', null);
 
         console.log(`\n📋 Processing ${threads.length} Threads...`);
-        for (const r of threads) await processRow(r, 'Thread', issueMapping[r['Parent']]);
-
-        console.log(`\n📋 Processing ${milestones.length} Milestones...`);
-        for (const r of milestones) {
-            if (issueMapping[r['Parent']]) await processRow(r, 'Milestone', issueMapping[r['Parent']]);
-            else { console.error(`❌ No parent for: ${r['Issue Key']}`); results.failed++; }
+        for (const r of threads) {
+            const parentKey = issueMapping[r['Parent']];
+            if (parentKey) {
+                await processRow(r, 'Thread', parentKey);
+            } else {
+                console.error(`❌ Thread ${r['Issue Key']} has no valid Parent mapping (${r['Parent']}). Skipping it.`);
+                results.failed++;
+            }
         }
     }
 
