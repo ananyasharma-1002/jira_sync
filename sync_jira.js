@@ -51,10 +51,13 @@ async function getSheetData() {
 function convertDate(d) {
     if (!d) return null;
     const str = String(d).trim();
+    // Support YYYY-MM-DD directly
+    if (str.match(/^\d{4}-\d{2}-\d{2}$/)) return str;
+
     // Support DD/MM/YYYY format
     const match = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (!match) {
-        console.warn(`⚠️ Invalid date format: '${str}' (expected DD/MM/YYYY)`);
+        console.warn(`⚠️ Invalid date format: '${str}' (expected YYYY-MM-DD or DD/MM/YYYY)`);
         return null;
     }
     const [, day, month, year] = match;
@@ -195,7 +198,11 @@ async function getBody(row, type, parentKey, userCache) {
     // Next Milestone for Thread
     if (type === 'Thread') {
         const desc = row['Next Milestone (add only for Thread)'] || 'N/A';
-        body.fields[CUSTOM_FIELDS['Next Milestone']] = String(desc).trim() || 'N/A';
+        body.fields[CUSTOM_FIELDS['Next Milestone']] = {
+            type: "doc",
+            version: 1,
+            content: [{ type: "paragraph", content: [{ type: "text", text: String(desc).trim() || 'N/A' }] }]
+        };
     }
 
     return body;
@@ -214,7 +221,11 @@ function getUpdateBody(row, parentKey) {
     // Also update custom field on Thread if needed
     if (row['Issue Type'] === 'Thread') {
         const desc = row['Next Milestone (add only for Thread)'] || 'N/A';
-        body.fields[CUSTOM_FIELDS['Next Milestone']] = String(desc).trim() || 'N/A';
+        body.fields[CUSTOM_FIELDS['Next Milestone']] = {
+            type: "doc",
+            version: 1,
+            content: [{ type: "paragraph", content: [{ type: "text", text: String(desc).trim() || 'N/A' }] }]
+        };
     }
 
     return body;
